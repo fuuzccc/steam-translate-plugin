@@ -361,16 +361,22 @@
         });
     }
 
-    // 节流:确保请求间隔(百度标准版 QPS=1)
+    // 节流:链式队列确保请求真正串行(百度标准版 QPS=1)
+    let requestChain = Promise.resolve();
     function throttle() {
-        return new Promise(resolve => {
+        const run = () => {
             const now = Date.now();
             const wait = Math.max(0, REQUEST_INTERVAL - (now - lastRequestTime));
-            setTimeout(() => {
-                lastRequestTime = Date.now();
-                resolve();
-            }, wait);
-        });
+            return new Promise(resolve => {
+                setTimeout(() => {
+                    lastRequestTime = Date.now();
+                    resolve();
+                }, wait);
+            });
+        };
+        // 排到链尾,前一个完成后才执行下一个,彻底避免并发竞态
+        requestChain = requestChain.then(() => run());
+        return requestChain;
     }
 
     // 百度翻译签名生成: sign = MD5(appid + q + salt + secretKey)
