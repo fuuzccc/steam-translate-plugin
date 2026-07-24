@@ -968,6 +968,8 @@
             font-size: 11px;
             margin-bottom: 6px;
             min-height: 14px;
+            -webkit-user-select: text;
+            user-select: text;
         }
         #steam-translate-panel .stp-api-status-ok { color: #588a18; }
         #steam-translate-panel .stp-api-status-error { color: #c9302c; }
@@ -990,6 +992,8 @@
             max-height: 120px;
             overflow-y: auto;
             font-size: 10px;
+            -webkit-user-select: text;
+            user-select: text;
         }
         #steam-translate-panel .stp-error-empty {
             color: #8f98a0;
