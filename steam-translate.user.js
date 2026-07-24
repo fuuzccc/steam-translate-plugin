@@ -342,21 +342,37 @@
                 url: url,
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 data: data,
-                timeout: 10000,
+                timeout: 15000,
                 onload: function (resp) {
                     if (resp.status >= 200 && resp.status < 300) {
                         resolve(resp.responseText);
                     } else {
-                        reject(new Error('HTTP ' + resp.status));
+                        // 百度 API 可能返回非 2xx 但 body 含 error_code
+                        let detail = '';
+                        try { detail = resp.responseText ? resp.responseText.slice(0, 200) : ''; } catch (e) {}
+                        reject(new Error('HTTP ' + resp.status + (detail ? ' ' + detail : '')));
                     }
                 },
-                onerror: function () { reject(new Error('网络错误')); },
-                ontimeout: function () { reject(new Error('请求超时')); }
+                onerror: function (resp) {
+                    // 捕获 GM_xmlhttpRequest 的错误详情
+                    let info = '网络错误';
+                    if (resp) {
+                        if (resp.status) info += '(status=' + resp.status + ')';
+                        if (resp.statusText) info += ' ' + resp.statusText;
+                        if (resp.error) info += ' ' + resp.error;
+                        try {
+                            if (resp.responseText) info += ' ' + String(resp.responseText).slice(0, 150);
+                        } catch (e) {}
+                    }
+                    console.warn('[Steam翻译] gmPost onerror:', resp);
+                    reject(new Error(info));
+                },
+                ontimeout: function () { reject(new Error('请求超时(15s)')); }
             };
             try {
                 GM_xmlhttpRequest(opts);
             } catch (e) {
-                reject(e);
+                reject(new Error('GM_xmlhttpRequest异常: ' + e.message));
             }
         });
     }
