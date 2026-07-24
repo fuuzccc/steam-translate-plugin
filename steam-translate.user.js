@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Steam 自动翻译 (评论区 & 创意工坊)
 // @namespace    https://steampp.net/steam-translate
-// @version      2.2.0
-// @description  自动翻译 Steam 评论区与创意工坊内容为中文,译文显示在原文下方,带悬浮管理面板,支持百度翻译(含MyMemory CORS兜底)
+// @version      2.3.0
+// @description  自动翻译 Steam 评论区与创意工坊内容为中文,支持选中翻译、定时重扫动态加载内容
 // @author       User
 // @match        *://steamcommunity.com/*
 // @match        *://store.steampowered.com/*
@@ -689,6 +689,12 @@
         gameDesc: [
             '.game_area_description',
             '.game_description_snippet'
+        ],
+        reviewSummary: [
+            '.user_reviews_summary_row .summary',
+            '.game_review_summary .summary',
+            '#game_area_metascore .score',
+            '#game_area_metascore .desc'
         ]
     };
 
@@ -749,7 +755,7 @@
 
     // 判断该作用域是否启用
     function isScopeEnabled(scope) {
-        if (scope === 'reviews') return config.translateReviews;
+        if (scope === 'reviews' || scope === 'reviewSummary') return config.translateReviews;
         if (scope === 'workshop') return config.translateWorkshop;
         if (scope === 'comments') return config.translateComments;
         if (scope === 'gameDesc') return config.translateGameDesc;
@@ -759,7 +765,7 @@
     // 获取当前页面所有目标元素
     function getAllTargetElements() {
         const all = [];
-        const scopes = ['reviews', 'workshop', 'comments', 'gameDesc'];
+        const scopes = ['reviews', 'reviewSummary', 'workshop', 'comments', 'gameDesc'];
         for (const scope of scopes) {
             if (!isScopeEnabled(scope)) continue;
             for (const sel of (SELECTORS[scope] || [])) {
@@ -939,13 +945,39 @@
         }
     }
 
+    let periodicScanTimer = null;
+
     function startTranslation() {
         initObserver();
         scanExisting();
+        // 启动定时重扫描,覆盖 Steam 动态加载的内容(前 60 秒每 3 秒扫一次,之后每 10 秒一次)
+        startPeriodicScan();
     }
 
     function stopTranslation() {
         stopObserver();
+        stopPeriodicScan();
+    }
+
+    function startPeriodicScan() {
+        if (periodicScanTimer) return;
+        let count = 0;
+        const maxRapid = 20; // 快速扫描次数 = 20 * 3s = 60s
+        function tick() {
+            if (!config.enabled) return;
+            scanExisting();
+            count++;
+            const interval = count < maxRapid ? 3000 : 10000;
+            periodicScanTimer = setTimeout(tick, interval);
+        }
+        periodicScanTimer = setTimeout(tick, 2000);
+    }
+
+    function stopPeriodicScan() {
+        if (periodicScanTimer) {
+            clearTimeout(periodicScanTimer);
+            periodicScanTimer = null;
+        }
     }
 
     // 移除所有已添加译文(切换语言时可选)
@@ -1188,6 +1220,48 @@
         }
         #steam-translate-fab.steam-translate-hidden {
             display: none;
+        }
+        /* 选中翻译浮动按钮 */
+        #steam-translate-popup {
+            position: absolute;
+            z-index: 2147483647;
+            background: #1b2838;
+            border: 1px solid #66c0f4;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 12px;
+            color: #66c0f4;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            user-select: none;
+            display: none;
+            white-space: nowrap;
+        }
+        #steam-translate-popup:hover {
+            background: #2a475e;
+        }
+        #steam-translate-popup-box {
+            position: absolute;
+            z-index: 2147483647;
+            background: #1b2838;
+            border: 1px solid #66c0f4;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 13px;
+            color: #c7d5e0;
+            max-width: 400px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.6);
+            display: none;
+            line-height: 1.5;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        #steam-translate-popup-box .steam-translate-popup-loading {
+            color: #8f98a0;
+            font-style: italic;
+        }
+        #steam-translate-popup-box .steam-translate-popup-error {
+            color: #c9302c;
         }
         `;
         if (typeof GM_addStyle === 'function') {
@@ -1511,6 +1585,119 @@
     }
 
     // ============================================================
+    // 模块 7.5:选中文本翻译(浮动按钮 + 弹窗)
+    // ============================================================
+    let popupBtn = null;
+    let popupBox = null;
+    let popupSelectedText = '';
+
+    function initSelectionTranslate() {
+        // 创建浮动翻译按钮
+        popupBtn = document.createElement('div');
+        popupBtn.id = 'steam-translate-popup';
+        popupBtn.textContent = '翻译选中内容';
+        popupBtn.addEventListener('mousedown', e => e.preventDefault()); // 防止失焦清除选中
+        popupBtn.addEventListener('click', onTranslateSelection);
+        document.body.appendChild(popupBtn);
+
+        // 创建翻译结果弹窗
+        popupBox = document.createElement('div');
+        popupBox.id = 'steam-translate-popup-box';
+        document.body.appendChild(popupBox);
+
+        // 监听选中文本
+        document.addEventListener('mouseup', onTextSelected);
+        document.addEventListener('keyup', onTextSelected);
+
+        // 点击其他地方关闭弹窗
+        document.addEventListener('mousedown', e => {
+            if (popupBtn && popupBtn.style.display === 'block' && !popupBtn.contains(e.target)) {
+                hidePopupBtn();
+            }
+            if (popupBox && popupBox.style.display === 'block' && !popupBox.contains(e.target) &&
+                !(popupBtn && popupBtn.contains(e.target))) {
+                hidePopupBox();
+            }
+        });
+    }
+
+    function onTextSelected(e) {
+        if (!config || !config.enabled) return;
+        // 忽略输入框内的选中
+        const target = e.target;
+        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+
+        setTimeout(() => {
+            const selection = window.getSelection();
+            const text = selection ? selection.toString().trim() : '';
+            if (text.length < 2 || text.length > 5000) {
+                hidePopupBtn();
+                return;
+            }
+            // 跳过纯中文
+            if (config.targetLang.indexOf('zh') === 0) {
+                const cjkCount = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+                if (cjkCount / text.length > 0.5) {
+                    hidePopupBtn();
+                    return;
+                }
+            }
+            popupSelectedText = text;
+            // 定位按钮到选中文本附近
+            const range = selection.getRangeAt(0);
+            const rect = range.getBoundingClientRect();
+            showPopupBtn(rect.left + window.scrollX + rect.width / 2, rect.top + window.scrollY - 8);
+        }, 10);
+    }
+
+    function showPopupBtn(x, y) {
+        if (!popupBtn) return;
+        popupBtn.style.display = 'block';
+        // 水平居中,垂直在选中文本上方
+        popupBtn.style.left = (x - popupBtn.offsetWidth / 2) + 'px';
+        popupBtn.style.top = (y - popupBtn.offsetHeight) + 'px';
+    }
+
+    function hidePopupBtn() {
+        if (popupBtn) popupBtn.style.display = 'none';
+    }
+
+    function hidePopupBox() {
+        if (popupBox) popupBox.style.display = 'none';
+    }
+
+    async function onTranslateSelection() {
+        if (!popupSelectedText || !popupBox) return;
+        hidePopupBtn();
+
+        // 在按钮位置显示弹窗
+        const btnRect = popupBtn.getBoundingClientRect();
+        popupBox.style.display = 'block';
+        popupBox.style.left = (btnRect.left + window.scrollX) + 'px';
+        popupBox.style.top = (btnRect.bottom + window.scrollY + 4) + 'px';
+        popupBox.innerHTML = '<div class="steam-translate-popup-loading">翻译中...</div>';
+
+        try {
+            const result = await translateText(popupSelectedText, config.targetLang);
+            if (result) {
+                popupBox.textContent = result;
+            } else {
+                popupBox.innerHTML = '<div class="steam-translate-popup-error">翻译结果为空</div>';
+            }
+        } catch (e) {
+            const errMsg = e && e.message ? e.message : '未知错误';
+            popupBox.innerHTML = '<div class="steam-translate-popup-error">翻译失败: ' + escapeHtml(errMsg) + '</div>';
+            addErrorLog('选中翻译失败: ' + errMsg, popupSelectedText);
+        }
+    }
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    // ============================================================
     // 模块 8:URL 变化监听(SPA 导航)
     // ============================================================
     let lastURL = location.href;
@@ -1554,6 +1741,7 @@
         // 等待 body 就绪
         const start = () => {
             createPanel();
+            initSelectionTranslate();
 
             // 注册菜单命令(快捷入口)
             if (typeof GM_registerMenuCommand === 'function') {
