@@ -343,8 +343,31 @@
         return (wordToHex(a) + wordToHex(b) + wordToHex(c) + wordToHex(d)).toLowerCase();
     }
 
+    // 诊断 GM_xmlhttpRequest 是否可用
+    function getGmDiag() {
+        let diag = 'GM_xmlhttpRequest=' + (typeof GM_xmlhttpRequest);
+        try { diag += ' location=' + location.hostname; } catch (e) {}
+        return diag;
+    }
+
     function gmPost(url, data) {
         const reqId = '[Steam翻译#' + (++logSeq) + ']';
+        // GM_xmlhttpRequest 不可用时降级用 fetch
+        if (typeof GM_xmlhttpRequest !== 'function') {
+            log(reqId, 'GM_xmlhttpRequest不可用,降级fetch POST ' + url);
+            return fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: data
+            }).then(resp => {
+                log(reqId, 'fetch响应 status=' + resp.status);
+                if (resp.ok) return resp.text();
+                return resp.text().then(t => { throw new Error('HTTP ' + resp.status + ' ' + t.slice(0, 200)); });
+            }).catch(e => {
+                log(reqId, 'fetch失败:', e.message);
+                throw new Error('fetch失败: ' + e.message + ' [' + getGmDiag() + ']');
+            });
+        }
         return new Promise((resolve, reject) => {
             const opts = {
                 method: 'POST',
@@ -372,6 +395,10 @@
                         try {
                             if (resp.responseText) info += ' ' + String(resp.responseText).slice(0, 150);
                         } catch (e) {}
+                    }
+                    // resp 为空说明请求根本没发出,追加诊断信息
+                    if (!resp || (!resp.status && !resp.statusText && !resp.error)) {
+                        info += ' [' + getGmDiag() + '] 请求未到达服务器,可能是@connect未生效或网络代理拦截';
                     }
                     log(reqId, 'onerror:', info, '| resp:', resp);
                     reject(new Error(info));
