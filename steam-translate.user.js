@@ -486,23 +486,51 @@
         return m[lang] || lang;
     }
 
-    // Google 翻译免费接口(支持CORS,用fetch直接调用,作为百度不可用时的兜底)
+    // Google 翻译免费接口(优先GM_xmlhttpRequest,失败则fetch)
     async function translateViaGoogle(text, targetLang) {
         const gLang = toGoogleLang(targetLang);
         const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' +
             encodeURIComponent(gLang) + '&dt=t&q=' + encodeURIComponent(text);
-        log('Google翻译兜底: fetch GET', url.slice(0, 100));
+
+        // 优先用 GM_xmlhttpRequest(GET方式)
+        if (typeof GM_xmlhttpRequest === 'function') {
+            try {
+                log('Google翻译: GM_xmlhttpRequest GET');
+                const raw = await new Promise((resolve, reject) => {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: url,
+                        timeout: 10000,
+                        onload: r => resolve(r.responseText),
+                        onerror: r => reject(new Error('GM onerror')),
+                        ontimeout: () => reject(new Error('GM timeout'))
+                    });
+                });
+                log('Google翻译响应(前200字符):', raw.slice(0, 200));
+                const data = JSON.parse(raw);
+                return parseGoogleResult(data);
+            } catch (e) {
+                log('Google翻译 GM方式失败:', e.message, '尝试fetch兜底');
+            }
+        }
+
+        // fetch 兜底
+        log('Google翻译: fetch GET');
         const resp = await fetch(url);
         if (!resp.ok) throw new Error('Google翻译 HTTP ' + resp.status);
         const data = await resp.json();
-        // 返回格式:[[["译文","原文",...],...],...]
+        log('Google翻译 fetch成功');
+        return parseGoogleResult(data);
+    }
+
+    function parseGoogleResult(data) {
         let result = '';
         if (Array.isArray(data) && Array.isArray(data[0])) {
             for (const seg of data[0]) {
                 if (seg && seg[0]) result += seg[0];
             }
         }
-        log('Google翻译成功:', result.slice(0, 50));
+        log('Google翻译解析结果:', result.slice(0, 50));
         return result;
     }
 
