@@ -164,6 +164,18 @@
     const MAX_CONCURRENT = 1;           // 最大并发(标准版 QPS=1)
     const REQUEST_INTERVAL = 1000;      // 请求间隔 1s(标准版 QPS=1)
 
+    // 详细日志开关(可在控制台用 localStorage.steam_translate_debug='1' 开启)
+    let logSeq = 0;
+    function log() {
+        if (!DEBUG_MODE) return;
+        const args = Array.prototype.slice.call(arguments);
+        args.unshift('[Steam翻译]');
+        try { console.log.apply(console, args); } catch (e) {}
+    }
+    let DEBUG_MODE = false;
+    try { DEBUG_MODE = localStorage.getItem('steam_translate_debug') === '1'; } catch (e) {}
+    log('调试模式:', DEBUG_MODE, '(控制台执行 localStorage.steam_translate_debug=\'1\' 后刷新开启)');
+
     let lastRequestTime = 0;
 
     // MD5 实现(纯 JS, 兼容浏览器)
@@ -336,6 +348,7 @@
     }
 
     function gmPost(url, data) {
+        const reqId = '[Steam翻译#' + (++logSeq) + ']';
         return new Promise((resolve, reject) => {
             const opts = {
                 method: 'POST',
@@ -344,17 +357,17 @@
                 data: data,
                 timeout: 15000,
                 onload: function (resp) {
+                    log(reqId, 'onload status=' + resp.status + ' len=' + (resp.responseText ? resp.responseText.length : 0));
                     if (resp.status >= 200 && resp.status < 300) {
                         resolve(resp.responseText);
                     } else {
-                        // 百度 API 可能返回非 2xx 但 body 含 error_code
                         let detail = '';
                         try { detail = resp.responseText ? resp.responseText.slice(0, 200) : ''; } catch (e) {}
+                        log(reqId, '非2xx响应:', detail);
                         reject(new Error('HTTP ' + resp.status + (detail ? ' ' + detail : '')));
                     }
                 },
                 onerror: function (resp) {
-                    // 捕获 GM_xmlhttpRequest 的错误详情
                     let info = '网络错误';
                     if (resp) {
                         if (resp.status) info += '(status=' + resp.status + ')';
@@ -364,14 +377,20 @@
                             if (resp.responseText) info += ' ' + String(resp.responseText).slice(0, 150);
                         } catch (e) {}
                     }
-                    console.warn('[Steam翻译] gmPost onerror:', resp);
+                    log(reqId, 'onerror:', info, '| resp:', resp);
                     reject(new Error(info));
                 },
-                ontimeout: function () { reject(new Error('请求超时(15s)')); }
+                ontimeout: function () {
+                    log(reqId, 'ontimeout(15s)');
+                    reject(new Error('请求超时(15s)'));
+                }
             };
             try {
+                log(reqId, '发起请求 POST ' + url);
+                log(reqId, 'postData(前120字符):', data.slice(0, 120));
                 GM_xmlhttpRequest(opts);
             } catch (e) {
+                log(reqId, 'GM_xmlhttpRequest抛异常:', e.message);
                 reject(new Error('GM_xmlhttpRequest异常: ' + e.message));
             }
         });
@@ -383,9 +402,11 @@
         const run = () => {
             const now = Date.now();
             const wait = Math.max(0, REQUEST_INTERVAL - (now - lastRequestTime));
+            log('throttle 等待=' + wait + 'ms (距上次请求=' + (now - lastRequestTime) + 'ms)');
             return new Promise(resolve => {
                 setTimeout(() => {
                     lastRequestTime = Date.now();
+                    log('throttle 等待结束,放行');
                     resolve();
                 }, wait);
             });
@@ -450,14 +471,19 @@
             '&salt=' + salt +
             '&sign=' + sign;
 
+        log('translateText 准备请求: 文本长度=' + queryText.length + ' 目标=' + targetLang + ' appid=' + config.baiduAppId);
         await throttle();
+        log('translateText 节流通过,开始发送');
 
         try {
             const raw = await gmPost(BAIDU_ENDPOINT, postData);
+            log('translateText 收到响应,长度=' + (raw ? raw.length : 0), '前200字符:', raw ? raw.slice(0, 200) : '');
             const data = JSON.parse(raw);
 
             if (data.error_code && data.error_code !== '52000') {
-                throw new Error(BAIDU_ERROR_MSGS[data.error_code] || ('错误码: ' + data.error_code));
+                const msg = BAIDU_ERROR_MSGS[data.error_code] || ('错误码: ' + data.error_code);
+                log('translateText 百度返回错误码:', data.error_code, data.error_msg);
+                throw new Error(msg);
             }
 
             // 拼接翻译结果
@@ -473,11 +499,13 @@
                 setCachedTranslation(trimmed, targetLang, result);
                 stats.translated++;
                 updateStatsDisplay();
+                log('translateText 翻译成功:', result.slice(0, 50));
                 return result;
             }
+            log('translateText 翻译结果为空');
             return '';
         } catch (e) {
-            console.warn('[Steam翻译] 翻译失败:', e.message, '文本:', trimmed.slice(0, 50));
+            log('translateText 失败:', e.message, '文本:', trimmed.slice(0, 50));
             throw e;
         }
     }
