@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Steam 自动翻译 (评论区 & 创意工坊)
 // @namespace    https://steampp.net/steam-translate
-// @version      2.0.0
-// @description  自动翻译 Steam 评论区与创意工坊内容为中文,译文显示在原文下方,带悬浮管理面板,支持百度翻译
+// @version      2.1.0
+// @description  自动翻译 Steam 评论区与创意工坊内容为中文,译文显示在原文下方,带悬浮管理面板,支持百度翻译(含Google翻译兜底)
 // @author       User
 // @match        *://steamcommunity.com/*
 // @match        *://store.steampowered.com/*
@@ -13,6 +13,8 @@
 // @grant        GM_registerMenuCommand
 // @connect      fanyi-api.baidu.com
 // @connect      *.baidu.com
+// @connect      translate.googleapis.com
+// @connect      *.googleapis.com
 // @connect      *
 // @run-at       document-idle
 // ==/UserScript==
@@ -478,6 +480,66 @@
         '58000': '客户端 IP 非法'
     };
 
+    // 百度→Google 语言代码映射(Google 免费接口用)
+    function toGoogleLang(lang) {
+        const m = { 'zh': 'zh-CN', 'cht': 'zh-TW', 'jp': 'ja', 'kor': 'ko', 'ru': 'ru', 'en': 'en', 'fr': 'fr', 'de': 'de' };
+        return m[lang] || lang;
+    }
+
+    // Google 翻译免费接口(支持CORS,用fetch直接调用,作为百度不可用时的兜底)
+    async function translateViaGoogle(text, targetLang) {
+        const gLang = toGoogleLang(targetLang);
+        const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' +
+            encodeURIComponent(gLang) + '&dt=t&q=' + encodeURIComponent(text);
+        log('Google翻译兜底: fetch GET', url.slice(0, 100));
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error('Google翻译 HTTP ' + resp.status);
+        const data = await resp.json();
+        // 返回格式:[[["译文","原文",...],...],...]
+        let result = '';
+        if (Array.isArray(data) && Array.isArray(data[0])) {
+            for (const seg of data[0]) {
+                if (seg && seg[0]) result += seg[0];
+            }
+        }
+        log('Google翻译成功:', result.slice(0, 50));
+        return result;
+    }
+
+    // 百度翻译核心请求
+    async function translateViaBaidu(text, targetLang) {
+        if (!config.baiduAppId || !config.baiduSecretKey) {
+            throw new Error('请先在管理面板中配置百度翻译 APPID 和密钥');
+        }
+        const queryText = text.length > MAX_TEXT_LENGTH ? text.slice(0, MAX_TEXT_LENGTH) : text;
+        const salt = String(Date.now()) + String(Math.floor(Math.random() * 10000));
+        const sign = generateSign(config.baiduAppId, queryText, salt, config.baiduSecretKey);
+        const postData = 'q=' + encodeURIComponent(queryText) +
+            '&from=auto&to=' + encodeURIComponent(targetLang) +
+            '&appid=' + encodeURIComponent(config.baiduAppId) +
+            '&salt=' + salt + '&sign=' + sign;
+
+        log('百度翻译: 文本长度=' + queryText.length + ' 目标=' + targetLang + ' appid=' + config.baiduAppId);
+        await throttle();
+        const raw = await gmPost(BAIDU_ENDPOINT, postData);
+        log('百度翻译响应: 长度=' + (raw ? raw.length : 0), '前200字符:', raw ? raw.slice(0, 200) : '');
+        const data = JSON.parse(raw);
+        if (data.error_code && data.error_code !== '52000') {
+            throw new Error(BAIDU_ERROR_MSGS[data.error_code] || ('错误码: ' + data.error_code));
+        }
+        let result = '';
+        if (Array.isArray(data.trans_result)) {
+            for (const item of data.trans_result) {
+                if (result) result += '\n';
+                result += item.dst;
+            }
+        }
+        return result;
+    }
+
+    // 翻译入口:优先百度,失败自动降级Google
+    let baiduAvailable = true; // 百度是否可用(连续失败后标记为不可用,定期重试)
+    let baiduFailCount = 0;
     async function translateText(text, targetLang) {
         const trimmed = text.trim();
         if (!trimmed) return '';
@@ -487,67 +549,49 @@
             return '';
         }
 
-        // 检查百度翻译配置
-        if (!config.baiduAppId || !config.baiduSecretKey) {
-            throw new Error('请先在管理面板中配置百度翻译 APPID 和密钥');
-        }
-
         // 命中缓存
         const cached = getCachedTranslation(trimmed, targetLang);
         if (cached !== null) return cached;
 
-        // 超长文本截断(百度标准版单次上限 1000 字符)
-        const queryText = trimmed.length > MAX_TEXT_LENGTH
-            ? trimmed.slice(0, MAX_TEXT_LENGTH)
-            : trimmed;
-
-        const salt = String(Date.now()) + String(Math.floor(Math.random() * 10000));
-        const sign = generateSign(config.baiduAppId, queryText, salt, config.baiduSecretKey);
-
-        const postData = 'q=' + encodeURIComponent(queryText) +
-            '&from=auto' +
-            '&to=' + encodeURIComponent(targetLang) +
-            '&appid=' + encodeURIComponent(config.baiduAppId) +
-            '&salt=' + salt +
-            '&sign=' + sign;
-
-        log('translateText 准备请求: 文本长度=' + queryText.length + ' 目标=' + targetLang + ' appid=' + config.baiduAppId);
-        await throttle();
-        log('translateText 节流通过,开始发送');
-
-        try {
-            const raw = await gmPost(BAIDU_ENDPOINT, postData);
-            log('translateText 收到响应,长度=' + (raw ? raw.length : 0), '前200字符:', raw ? raw.slice(0, 200) : '');
-            const data = JSON.parse(raw);
-
-            if (data.error_code && data.error_code !== '52000') {
-                const msg = BAIDU_ERROR_MSGS[data.error_code] || ('错误码: ' + data.error_code);
-                log('translateText 百度返回错误码:', data.error_code, data.error_msg);
-                throw new Error(msg);
-            }
-
-            // 拼接翻译结果
-            let result = '';
-            if (Array.isArray(data.trans_result)) {
-                for (const item of data.trans_result) {
-                    if (result) result += '\n';
-                    result += item.dst;
+        // 优先百度翻译
+        if (baiduAvailable && config.baiduAppId && config.baiduSecretKey) {
+            try {
+                const result = await translateViaBaidu(trimmed, targetLang);
+                if (result) {
+                    baiduFailCount = 0; // 重置失败计数
+                    setCachedTranslation(trimmed, targetLang, result);
+                    stats.translated++;
+                    updateStatsDisplay();
+                    return result;
                 }
+            } catch (e) {
+                log('百度翻译失败,尝试Google兜底:', e.message);
+                baiduFailCount++;
+                addErrorLog('百度失败→Google兜底: ' + e.message, trimmed);
+                // 连续失败3次,暂时标记百度不可用(60秒后重试)
+                if (baiduFailCount >= 3) {
+                    baiduAvailable = false;
+                    log('百度翻译连续失败' + baiduFailCount + '次,暂时切换到Google,60秒后重试百度');
+                    setTimeout(() => { baiduAvailable = true; baiduFailCount = 0; log('百度翻译重试已重新启用'); }, 60000);
+                }
+                // 继续走 Google 兜底
             }
+        }
 
+        // Google 翻译兜底
+        try {
+            const result = await translateViaGoogle(trimmed, targetLang);
             if (result) {
                 setCachedTranslation(trimmed, targetLang, result);
                 stats.translated++;
                 updateStatsDisplay();
-                log('translateText 翻译成功:', result.slice(0, 50));
                 return result;
             }
-            log('translateText 翻译结果为空');
-            return '';
         } catch (e) {
-            log('translateText 失败:', e.message, '文本:', trimmed.slice(0, 50));
-            throw e;
+            log('Google翻译也失败:', e.message);
+            throw new Error('百度和Google翻译均失败: ' + e.message);
         }
+        return '';
     }
 
     // 测试百度翻译密钥是否有效(用短文本发一次请求)
