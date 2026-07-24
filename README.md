@@ -1,16 +1,17 @@
 # Steam++ 自动翻译插件
 
-Watt Toolkit (原 Steam++) Userscript 插件，自动翻译 Steam 评论区与创意工坊内容，译文追加显示在原文下方，带悬浮管理面板。
+Watt Toolkit (原 Steam++) Userscript 插件，自动翻译 Steam 商店页、评论区与创意工坊内容，译文追加显示在原文下方，带悬浮管理面板。基于百度翻译 API。
 
 ## 功能特性
 
-- 🔄 **自动翻译**：自动检测并翻译非目标语言的评论、评测与创意工坊内容
+- 🔄 **自动翻译**：自动检测并翻译非目标语言的评论、评测、创意工坊与游戏描述
 - 🌐 **多语言支持**：简体中文、繁体中文、英语、日语、韩语、俄语等
 - 📋 **译文追加**：保留原文，译文显示在下方，不破坏页面结构
 - 🎛️ **悬浮管理面板**：可拖拽、可最小化的控制面板，管理所有功能
 - 💾 **智能缓存**：已翻译内容本地缓存，避免重复请求
 - ⚡ **节流保护**：并发限制 + 请求间隔，防止触发 API 限流
 - 📱 **动态监听**：自动捕获 AJAX 加载的新内容并翻译
+- 🆕 **新版商店页适配**：支持 Steam 新版商店页（随机类名）的评测与游戏描述
 
 ## 支持的页面
 
@@ -19,6 +20,7 @@ Watt Toolkit (原 Steam++) Userscript 插件，自动翻译 Steam 评论区与�
 | 评论区/评测 | 商店页评测、社区评测卡片 |
 | 创意工坊描述 | 工坊物品标题、描述 |
 | 通用评论流 | 所有 Steam 页面的评论区 |
+| 游戏描述 | 商店页游戏介绍文本 |
 
 支持域名：`steamcommunity.com`、`store.steampowered.com`
 
@@ -29,6 +31,7 @@ Watt Toolkit (原 Steam++) Userscript 插件，自动翻译 Steam 评论区与�
 - 已安装 [Watt Toolkit (Steam++)](https://steampp.net/)
 - 已启用「网络加速」中的 Steam 社区/商店加速
 - 已在「加速设置」中开启「启用脚本」
+- 已在 [百度翻译开放平台](https://fanyi-api.baidu.com/) 申请通用翻译 API，获取 APP ID 和密钥
 
 ### 安装步骤
 
@@ -36,7 +39,8 @@ Watt Toolkit (原 Steam++) Userscript 插件，自动翻译 Steam 评论区与�
 2. 点击「新建脚本」
 3. 将 `steam-translate.user.js` 的全部内容粘贴进去
 4. 保存脚本，确保脚本已启用
-5. 刷新 Steam 页面即可使用
+5. 刷新 Steam 页面，打开悬浮面板填写百度翻译 APP ID 和密钥
+6. 开始使用
 
 ## 使用说明
 
@@ -46,7 +50,8 @@ Watt Toolkit (原 Steam++) Userscript 插件，自动翻译 Steam 评论区与�
 
 - **翻译总开关**：启用/禁用全部翻译功能
 - **目标语言**：选择翻译目标语言
-- **作用域复选框**：分别控制评论区、创意工坊、通用评论的翻译开关
+- **翻译内容**：分别控制评论区、创意工坊、通用评论、游戏描述的翻译开关
+- **百度翻译 API**：填入 APP ID 和密钥，点击保存
 - **立即翻译当前页**：强制重新翻译当前页面所有内容
 - **清除缓存**：清空本地翻译缓存
 - **清除本页译文**：移除当前页面所有已添加的译文
@@ -64,10 +69,12 @@ Watt Toolkit (原 Steam++) Userscript 插件，自动翻译 Steam 评论区与�
 
 ## 技术说明
 
-- **翻译服务**：Google 翻译免费接口 (`translate.googleapis.com`)，无需 API Key
+- **翻译服务**：百度翻译通用 API (`fanyi-api.baidu.com`)，需自行申请 APP ID 和密钥
+- **签名算法**：MD5(appid + q + salt + secretKey)
 - **脚本格式**：标准 Userscript，兼容 Tampermonkey / Greasemonkey 语法
 - **GM_* API**：`GM_xmlhttpRequest`、`GM_setValue`、`GM_getValue`、`GM_addStyle`
 - **存储降级**：GM API 不可用时自动降级到 `localStorage`
+- **新版商店页适配**：采用结构特征检测（文本长度、父级结构、关键词匹配）识别评测与游戏描述
 
 ## 配置项
 
@@ -78,10 +85,20 @@ Watt Toolkit (原 Steam++) Userscript 插件，自动翻译 Steam 评论区与�
 | `translateReviews` | `true` | 评论区/评测翻译开关 |
 | `translateWorkshop` | `true` | 创意工坊翻译开关 |
 | `translateComments` | `true` | 通用评论流翻译开关 |
+| `translateGameDesc` | `true` | 游戏描述翻译开关 |
+| `baiduAppId` | `''` | 百度翻译 APP ID |
+| `baiduSecretKey` | `''` | 百度翻译密钥 |
 | `panelCollapsed` | `false` | 面板是否最小化 |
 | `cacheExpiry` | `86400000` | 缓存有效期(ms)，默认 24 小时 |
 
 ## 版本历史
+
+### v2.0.0
+- 翻译引擎从 Google 翻译迁移到百度翻译 API
+- 新增游戏描述翻译支持
+- 适配 Steam 新版商店页（随机类名 DOM 结构）
+- 管理面板增加百度翻译 API 配置项
+- 优化选择器检测逻辑（结构特征 + 经典选择器双重策略）
 
 ### v1.0.0
 - 初始版本
