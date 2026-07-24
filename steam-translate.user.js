@@ -553,7 +553,7 @@
     }
 
     // 翻译入口:优先百度(GM_xmlhttpRequest),失败降级 MyMemory(fetch,支持CORS)
-    let baiduAvailable = true; // 百度是否可用(连续失败后标记为不可用,定期重试)
+    let baiduAvailable = true; // 百度是否可用(网络错误时永久禁用本次会话)
     let baiduFailCount = 0;
     async function translateText(text, targetLang) {
         const trimmed = text.trim();
@@ -580,14 +580,25 @@
                     return result;
                 }
             } catch (e) {
-                log('百度翻译失败,尝试 MyMemory 兜底:', e.message);
                 baiduFailCount++;
-                addErrorLog('百度失败→MyMemory兜底: ' + e.message, trimmed);
-                // 连续失败3次,暂时标记百度不可用(60秒后重试)
-                if (baiduFailCount >= 3) {
+                // 判断是否为网络层面错误(GM_xmlhttpRequest 不支持跨域)
+                // 这类错误说明当前环境(如 Watt Toolkit)不支持 GM 跨域,永久禁用百度
+                const isNetworkError = e.message.includes('网络错误') ||
+                    e.message.includes('请求未到达服务器') ||
+                    e.message.includes('2秒内无任何回调');
+                if (isNetworkError) {
                     baiduAvailable = false;
-                    log('百度翻译连续失败' + baiduFailCount + '次,暂时切换到 MyMemory,60秒后重试百度');
-                    setTimeout(() => { baiduAvailable = true; baiduFailCount = 0; log('百度翻译重试已重新启用'); }, 60000);
+                    log('百度翻译: 当前环境不支持 GM_xmlhttpRequest 跨域,本次会话永久切换到 MyMemory');
+                    // 不记录到错误日志,避免刷屏(仅在控制台输出一次)
+                } else {
+                    // 业务错误(签名错误/密钥错误等),记录并重试
+                    log('百度翻译失败,尝试 MyMemory 兜底:', e.message);
+                    addErrorLog('百度失败→MyMemory兜底: ' + e.message, trimmed);
+                    if (baiduFailCount >= 3) {
+                        baiduAvailable = false;
+                        log('百度翻译连续业务失败' + baiduFailCount + '次,暂时切换到 MyMemory,60秒后重试');
+                        setTimeout(() => { baiduAvailable = true; baiduFailCount = 0; log('百度翻译重试已重新启用'); }, 60000);
+                    }
                 }
                 // 继续走 MyMemory 兜底
             }
@@ -685,29 +696,19 @@
     function detectNewReviewContent(el) {
         if (!el || el.nodeType !== 1) return false;
         const text = (el.textContent || '').trim();
-        if (text.length < 50 || text.length > 5000) return false;
+        if (text.length < 30 || text.length > 8000) return false;
 
         // 特征 1: 在 app_reviews_hash 区域内
         const inReviews = el.closest && el.closest('#app_reviews_hash');
         if (!inReviews) return false;
 
-        // 特征 2: 是 .Panel 的子节点
-        const panelParent = el.closest && el.closest('.Panel');
-        if (!panelParent) return false;
-
-        // 特征 3: 父级面板包含"Recommended"或"Not Recommended"标识
-        const panelText = panelParent.textContent || '';
-        if (panelText.indexOf('Recommended') < 0 && panelText.indexOf('Not Recommended') < 0) {
-            return false;
-        }
-
-        // 特征 4: 元素直接包含可读文本(不是按钮/链接容器)
+        // 特征 2: 元素直接包含可读文本(不是按钮/链接容器)
         const childCount = el.children ? el.children.length : 0;
-        if (childCount > 5) return false;
+        if (childCount > 8) return false;
 
-        // 特征 5: 文本密度高(文本长度 / 子元素数)
+        // 特征 3: 文本密度高(文本长度 / 子元素数)
         const textDensity = text.length / Math.max(childCount, 1);
-        if (textDensity < 30) return false;
+        if (textDensity < 20) return false;
 
         return true;
     }
@@ -768,9 +769,9 @@
             }
         }
 
-        // 额外扫描新版商店页的评测内容
+        // 额外扫描新版商店页的评测内容(不限于 .Panel,覆盖所有可能容器)
         if (config.translateReviews && document.getElementById('app_reviews_hash')) {
-            document.querySelectorAll('#app_reviews_hash .Panel div').forEach(el => {
+            document.querySelectorAll('#app_reviews_hash div, #app_reviews_hash p, #app_reviews_hash span').forEach(el => {
                 if (detectNewReviewContent(el) && all.indexOf(el) < 0) {
                     all.push(el);
                 }
@@ -779,7 +780,7 @@
 
         // 额外扫描新版商店页的游戏描述
         if (config.translateGameDesc) {
-            document.querySelectorAll('.game_description_column div').forEach(el => {
+            document.querySelectorAll('#game_area_description div, .game_area_description div, .game_description_column div, [data-featuretarget="about-this-game"] div').forEach(el => {
                 if (detectNewGameDesc(el) && all.indexOf(el) < 0) {
                     all.push(el);
                 }
@@ -896,15 +897,17 @@
                             } catch (e) { /* 忽略 */ }
                         }
                     }
-                    // 新版 Steam 商店页:在 app_reviews_hash 内额外扫描
+                    // 新版 Steam 商店页:在 app_reviews_hash 内额外扫描(不限于 .Panel)
                     if (isScopeEnabled('reviews') && node.closest && node.closest('#app_reviews_hash')) {
                         if (node.querySelectorAll) {
-                            node.querySelectorAll('.Panel div').forEach(el => {
+                            node.querySelectorAll('div, p, span').forEach(el => {
                                 if (detectNewReviewContent(el)) pending.push(el);
                             });
                         }
                     }
-                    if (isScopeEnabled('gameDesc') && node.closest && node.closest('.game_description_column')) {
+                    // 新版 Steam 商店页:游戏描述区域额外扫描
+                    if (isScopeEnabled('gameDesc') && node.closest &&
+                        (node.closest('.game_description_column') || node.closest('#game_area_description') || node.closest('[data-featuretarget="about-this-game"]'))) {
                         if (node.querySelectorAll) {
                             node.querySelectorAll('div').forEach(el => {
                                 if (detectNewGameDesc(el)) pending.push(el);
