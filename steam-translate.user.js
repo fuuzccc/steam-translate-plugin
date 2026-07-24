@@ -378,6 +378,23 @@
         return md5(appid + q + salt + secretKey);
     }
 
+    // 百度翻译 API 错误码映射(供 translateText 和 testBaiduApi 共用)
+    const BAIDU_ERROR_MSGS = {
+        '52000': '成功',
+        '52001': '请求超时',
+        '52002': '系统错误',
+        '52003': '未授权用户,请检查 APPID 和密钥',
+        '52004': '账号已欠费',
+        '52005': '翻译语言方向不支持',
+        '52006': '接口已关闭',
+        '54000': '参数错误',
+        '54001': '签名错误',
+        '54003': '调用频率过高',
+        '54004': '余额不足',
+        '54005': '长文本翻译请求过于频繁',
+        '58000': '客户端 IP 非法'
+    };
+
     async function translateText(text, targetLang) {
         const trimmed = text.trim();
         if (!trimmed) return '';
@@ -417,23 +434,8 @@
             const raw = await gmPost(BAIDU_ENDPOINT, postData);
             const data = JSON.parse(raw);
 
-            if (data.error_code) {
-                const errMsg = {
-                    '52000': '成功',
-                    '52001': '请求超时',
-                    '52002': '系统错误',
-                    '52003': '未授权用户,请检查 APPID 和密钥',
-                    '52004': '账号已欠费',
-                    '52005': '翻译语言方向不支持',
-                    '52006': '接口已关闭',
-                    '54000': '参数错误',
-                    '54001': '签名错误',
-                    '54003': '调用频率过高',
-                    '54004': '余额不足',
-                    '54005': '长文本翻译请求过于频繁',
-                    '58000': '客户端 IP 非法'
-                };
-                throw new Error(errMsg[data.error_code] || ('错误码: ' + data.error_code));
+            if (data.error_code && data.error_code !== '52000') {
+                throw new Error(BAIDU_ERROR_MSGS[data.error_code] || ('错误码: ' + data.error_code));
             }
 
             // 拼接翻译结果
@@ -455,6 +457,29 @@
         } catch (e) {
             console.warn('[Steam翻译] 翻译失败:', e.message, '文本:', trimmed.slice(0, 50));
             throw e;
+        }
+    }
+
+    // 测试百度翻译密钥是否有效(用短文本发一次请求)
+    async function testBaiduApi(appId, secretKey) {
+        const testText = 'hello';
+        const salt = String(Date.now());
+        const sign = generateSign(appId, testText, salt, secretKey);
+        const postData = 'q=' + encodeURIComponent(testText) +
+            '&from=auto&to=zh' +
+            '&appid=' + encodeURIComponent(appId) +
+            '&salt=' + salt +
+            '&sign=' + sign;
+        try {
+            const raw = await gmPost(BAIDU_ENDPOINT, postData);
+            const data = JSON.parse(raw);
+            if (data.error_code && data.error_code !== '52000') {
+                const errMsg = BAIDU_ERROR_MSGS[data.error_code] || ('错误码: ' + data.error_code);
+                return { ok: false, message: errMsg };
+            }
+            return { ok: true, message: '验证成功' };
+        } catch (e) {
+            return { ok: false, message: e.message || '网络错误' };
         }
     }
 
@@ -665,9 +690,11 @@
                 resultNode.remove();
             }
         } catch (e) {
-            resultNode.querySelector('.steam-translate-text').textContent = '翻译失败';
+            const errMsg = e && e.message ? e.message : '未知错误';
+            resultNode.querySelector('.steam-translate-text').textContent = '翻译失败: ' + errMsg;
             resultNode.classList.remove('steam-translate-loading');
             resultNode.classList.add('steam-translate-error');
+            addErrorLog(errMsg, text);
         }
     }
 
@@ -937,6 +964,53 @@
             margin-bottom: 6px;
             line-height: 1.4;
         }
+        #steam-translate-panel .stp-api-status {
+            font-size: 11px;
+            margin-bottom: 6px;
+            min-height: 14px;
+        }
+        #steam-translate-panel .stp-api-status-ok { color: #588a18; }
+        #steam-translate-panel .stp-api-status-error { color: #c9302c; }
+        #steam-translate-panel .stp-api-status-info { color: #66c0f4; }
+        #steam-translate-panel .stp-error-section {
+            border-top: 1px solid #2a475e;
+            padding-top: 6px;
+            margin-top: 6px;
+        }
+        #steam-translate-panel .stp-error-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 11px;
+            color: #66c0f4;
+            font-weight: bold;
+            margin-bottom: 4px;
+        }
+        #steam-translate-panel .stp-error-list {
+            max-height: 120px;
+            overflow-y: auto;
+            font-size: 10px;
+        }
+        #steam-translate-panel .stp-error-empty {
+            color: #8f98a0;
+            font-style: italic;
+        }
+        #steam-translate-panel .stp-error-item {
+            border-bottom: 1px solid #2a475e;
+            padding: 3px 0;
+            color: #c7d5e0;
+        }
+        #steam-translate-panel .stp-error-time {
+            color: #8f98a0;
+        }
+        #steam-translate-panel .stp-error-msg {
+            color: #c9302c;
+        }
+        #steam-translate-panel .stp-error-text {
+            color: #8f98a0;
+            font-style: italic;
+            margin-top: 2px;
+        }
         /* 最小化图标 */
         #steam-translate-fab {
             position: fixed;
@@ -975,6 +1049,23 @@
     let panelEl = null;
     let fabEl = null;
     const stats = { translated: 0, cacheHits: 0 };
+    const errorLog = []; // {time: number, message: string, textExcerpt: string}
+    const MAX_ERROR_LOG = 20;
+
+    function addErrorLog(message, textExcerpt) {
+        errorLog.unshift({
+            time: Date.now(),
+            message: message,
+            textExcerpt: (textExcerpt || '').slice(0, 60)
+        });
+        if (errorLog.length > MAX_ERROR_LOG) errorLog.pop();
+        updateErrorLogDisplay();
+    }
+
+    function clearErrorLog() {
+        errorLog.length = 0;
+        updateErrorLogDisplay();
+    }
 
     function createPanel() {
         // 悬浮图标(最小化时显示)
@@ -1068,6 +1159,7 @@
             <div class="stp-row">
                 <button class="stp-btn" id="stp-save-api">保存 API 设置</button>
             </div>
+            <div class="stp-api-status" id="stp-api-status"></div>
             <div class="stp-row">
                 <button class="stp-btn" id="stp-translate-now">立即翻译当前页</button>
             </div>
@@ -1076,6 +1168,15 @@
                 <button class="stp-btn" id="stp-clear-page">清除本页译文</button>
             </div>
             <div class="stp-stats" id="stp-stats">已翻译: 0 | 缓存命中: 0</div>
+            <div class="stp-error-section">
+                <div class="stp-error-header">
+                    <span>错误日志</span>
+                    <button class="stp-btn" id="stp-clear-errors" style="font-size:10px;padding:2px 6px;">清除</button>
+                </div>
+                <div class="stp-error-list" id="stp-error-list">
+                    <div class="stp-error-empty">暂无错误</div>
+                </div>
+            </div>
         </div>
         `;
     }
@@ -1104,17 +1205,50 @@
         document.getElementById('stp-gamedesc').addEventListener('change', e => {
             setConfig('translateGameDesc', e.target.checked);
         });
-        // 百度 API 保存
-        document.getElementById('stp-save-api').addEventListener('click', () => {
-            const appid = document.getElementById('stp-baidu-appid').value.trim();
-            const key = document.getElementById('stp-baidu-key').value.trim();
+        // 百度 API 保存(含校验 + 测试)
+        async function saveBaiduApi(showFeedback) {
+            const appidInput = document.getElementById('stp-baidu-appid');
+            const keyInput = document.getElementById('stp-baidu-key');
+            const appid = appidInput.value.trim();
+            const key = keyInput.value.trim();
+            const btn = document.getElementById('stp-save-api');
+            const statusEl = document.getElementById('stp-api-status');
+
+            // 非空校验
+            if (!appid || !key) {
+                if (statusEl) { statusEl.textContent = 'APP ID 和密钥不能为空'; statusEl.className = 'stp-api-status stp-api-status-error'; }
+                return;
+            }
+
+            // 保存
             setConfig('baiduAppId', appid);
             setConfig('baiduSecretKey', key);
-            const btn = document.getElementById('stp-save-api');
-            const orig = btn.textContent;
-            btn.textContent = '已保存 ✓';
-            setTimeout(() => { btn.textContent = orig; }, 1500);
-        });
+
+            if (!showFeedback) return; // 自动保存时静默
+
+            // 测试密钥
+            if (btn) { btn.textContent = '验证中...'; btn.disabled = true; }
+            if (statusEl) { statusEl.textContent = '正在验证密钥...'; statusEl.className = 'stp-api-status stp-api-status-info'; }
+
+            const result = await testBaiduApi(appid, key);
+            if (result.ok) {
+                if (btn) { btn.textContent = '已保存 ✓'; setTimeout(() => { btn.textContent = '保存 API 设置'; btn.disabled = false; }, 1500); }
+                if (statusEl) { statusEl.textContent = '密钥验证成功 ✓'; statusEl.className = 'stp-api-status stp-api-status-ok'; }
+            } else {
+                if (btn) { btn.textContent = '保存 API 设置'; btn.disabled = false; }
+                if (statusEl) { statusEl.textContent = '验证失败: ' + result.message; statusEl.className = 'stp-api-status stp-api-status-error'; }
+                addErrorLog('API 验证失败: ' + result.message, '');
+            }
+        }
+
+        // 按钮点击 → 带反馈保存
+        document.getElementById('stp-save-api').addEventListener('click', () => saveBaiduApi(true));
+        // 输入框失焦 → 静默保存
+        document.getElementById('stp-baidu-appid').addEventListener('blur', () => saveBaiduApi(false));
+        document.getElementById('stp-baidu-key').addEventListener('blur', () => saveBaiduApi(false));
+        // 回车键 → 带反馈保存
+        document.getElementById('stp-baidu-appid').addEventListener('keydown', e => { if (e.key === 'Enter') saveBaiduApi(true); });
+        document.getElementById('stp-baidu-key').addEventListener('keydown', e => { if (e.key === 'Enter') saveBaiduApi(true); });
         // 立即翻译
         document.getElementById('stp-translate-now').addEventListener('click', () => {
             removeAllTranslations();
@@ -1128,6 +1262,8 @@
         document.getElementById('stp-clear-page').addEventListener('click', () => {
             removeAllTranslations();
         });
+        // 清除错误日志
+        document.getElementById('stp-clear-errors').addEventListener('click', clearErrorLog);
         // 折叠/展开
         document.getElementById('stp-collapse').addEventListener('click', () => {
             const collapsed = !panelEl.classList.contains('collapsed');
@@ -1197,6 +1333,25 @@
         if (el) {
             el.textContent = '已翻译: ' + stats.translated + ' | 缓存命中: ' + stats.cacheHits;
         }
+    }
+
+    function updateErrorLogDisplay() {
+        const listEl = document.getElementById('stp-error-list');
+        if (!listEl) return;
+        if (errorLog.length === 0) {
+            listEl.innerHTML = '<div class="stp-error-empty">暂无错误</div>';
+            return;
+        }
+        listEl.innerHTML = errorLog.map(entry => {
+            const time = new Date(entry.time).toLocaleTimeString();
+            const escapedMsg = entry.message.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const escapedText = entry.textExcerpt.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return '<div class="stp-error-item">' +
+                '<span class="stp-error-time">' + time + '</span> ' +
+                '<span class="stp-error-msg">' + escapedMsg + '</span>' +
+                (escapedText ? '<div class="stp-error-text">「' + escapedText + '」</div>' : '') +
+                '</div>';
+        }).join('');
     }
 
     // ============================================================
