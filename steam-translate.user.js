@@ -12,6 +12,8 @@
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
 // @connect      fanyi-api.baidu.com
+// @connect      *.baidu.com
+// @connect      *
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -369,6 +371,16 @@
             });
         }
         return new Promise((resolve, reject) => {
+            let settled = false;
+            const guardTimer = setTimeout(() => {
+                if (!settled) {
+                    settled = true;
+                    const msg = 'GM_xmlhttpRequest 2秒内无任何回调,可能被Watt Toolkit静默拦截 [' + getGmDiag() + ']';
+                    log(reqId, msg);
+                    reject(new Error(msg));
+                }
+            }, 2000);
+
             const opts = {
                 method: 'POST',
                 url: url,
@@ -376,6 +388,7 @@
                 data: data,
                 timeout: 15000,
                 onload: function (resp) {
+                    if (settled) return; settled = true; clearTimeout(guardTimer);
                     log(reqId, 'onload status=' + resp.status + ' len=' + (resp.responseText ? resp.responseText.length : 0));
                     if (resp.status >= 200 && resp.status < 300) {
                         resolve(resp.responseText);
@@ -387,6 +400,7 @@
                     }
                 },
                 onerror: function (resp) {
+                    if (settled) return; settled = true; clearTimeout(guardTimer);
                     let info = '网络错误';
                     if (resp) {
                         if (resp.status) info += '(status=' + resp.status + ')';
@@ -396,7 +410,6 @@
                             if (resp.responseText) info += ' ' + String(resp.responseText).slice(0, 150);
                         } catch (e) {}
                     }
-                    // resp 为空说明请求根本没发出,追加诊断信息
                     if (!resp || (!resp.status && !resp.statusText && !resp.error)) {
                         info += ' [' + getGmDiag() + '] 请求未到达服务器,可能是@connect未生效或网络代理拦截';
                     }
@@ -404,6 +417,7 @@
                     reject(new Error(info));
                 },
                 ontimeout: function () {
+                    if (settled) return; settled = true; clearTimeout(guardTimer);
                     log(reqId, 'ontimeout(15s)');
                     reject(new Error('请求超时(15s)'));
                 }
@@ -411,9 +425,12 @@
             try {
                 log(reqId, '发起请求 POST ' + url);
                 log(reqId, 'postData(前120字符):', data.slice(0, 120));
-                GM_xmlhttpRequest(opts);
+                log(reqId, 'GM_xmlhttpRequest类型:', typeof GM_xmlhttpRequest, '长度:', GM_xmlhttpRequest.length);
+                const ret = GM_xmlhttpRequest(opts);
+                log(reqId, 'GM_xmlhttpRequest返回值:', typeof ret, ret);
             } catch (e) {
-                log(reqId, 'GM_xmlhttpRequest抛异常:', e.message);
+                if (settled) return; settled = true; clearTimeout(guardTimer);
+                log(reqId, 'GM_xmlhttpRequest抛异常:', e.message, e.stack);
                 reject(new Error('GM_xmlhttpRequest异常: ' + e.message));
             }
         });
