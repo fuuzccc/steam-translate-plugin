@@ -164,17 +164,13 @@
     const MAX_CONCURRENT = 1;           // 最大并发(标准版 QPS=1)
     const REQUEST_INTERVAL = 1000;      // 请求间隔 1s(标准版 QPS=1)
 
-    // 详细日志开关(可在控制台用 localStorage.steam_translate_debug='1' 开启)
+    // 详细日志(始终输出,方便排查问题)
     let logSeq = 0;
     function log() {
-        if (!DEBUG_MODE) return;
         const args = Array.prototype.slice.call(arguments);
         args.unshift('[Steam翻译]');
         try { console.log.apply(console, args); } catch (e) {}
     }
-    let DEBUG_MODE = false;
-    try { DEBUG_MODE = localStorage.getItem('steam_translate_debug') === '1'; } catch (e) {}
-    log('调试模式:', DEBUG_MODE, '(控制台执行 localStorage.steam_translate_debug=\'1\' 后刷新开启)');
 
     let lastRequestTime = 0;
 
